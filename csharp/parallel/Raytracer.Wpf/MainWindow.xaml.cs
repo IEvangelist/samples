@@ -8,7 +8,7 @@ using System.Windows.Media.Media3D;
 using System.Windows.Media.Animation;
 using System.Threading;
 using System.Threading.Tasks;
-using System.Printing;
+using System.Windows.Threading;
 
 namespace Raytracer.Wpf
 {
@@ -23,12 +23,11 @@ namespace Raytracer.Wpf
         private readonly Color _lightColor = Colors.White;
         private readonly ReversiGame _gameEngine;
         private readonly MinimaxSpot[,] _guiBoard;
-        private Task _aiUiTask;
         private CancellationTokenSource _aiUiCts;
         private readonly TaskScheduler _uiScheduler;
         private bool _isGameOver, _isAiMoving, _isAiParallel, _isAuto;
-        private Duration _progressBarDuration;
-        private DoubleAnimation _progressBarAnimation;
+        private readonly DispatcherTimer _progressTimer;
+        private int _progress;
         private bool _useAnimation;
 
         public MainWindow()
@@ -71,73 +70,90 @@ namespace Raytracer.Wpf
                 }
             }
 
+            _progressTimer = new DispatcherTimer();
+            _progressTimer.Tick += OnProgressBarTimerTick;
+            _progress = 0;
+
             UpdateBoard();
         }
 
-        private void GoAI()
+        private void OnProgressBarTimerTick(object sender, EventArgs e)
+        {
+            _progress++;
+            if (_isAiParallel)
+            {
+                ui_parProgBar.ThreadSafeInvoke(() => ui_parProgBar.Value = _progress);
+            }
+            else
+            {
+                ui_seqProgBar.ThreadSafeInvoke(() => ui_seqProgBar.Value = _progress);
+            }
+        }
+
+        private async ValueTask GoAiAsync()
         {
             if (_isGameOver)
             {
                 return;
             }
 
-            _isAiMoving = true;
-
-            _progressBarAnimation = new DoubleAnimation(0.0, 100.0, _progressBarDuration);
             if (_isAiParallel)
             {
-                ui_parProgBar.Visibility = Visibility.Visible;
-                ui_parProgBar.BeginAnimation(ProgressBar.ValueProperty, _progressBarAnimation, HandoffBehavior.SnapshotAndReplace);
+                ui_parProgBar.ThreadSafeInvoke(() => ui_parProgBar.Visibility = Visibility.Visible);
             }
             else
             {
-                ui_seqProgBar.Visibility = Visibility.Visible;
-                ui_seqProgBar.BeginAnimation(ProgressBar.ValueProperty, _progressBarAnimation, HandoffBehavior.SnapshotAndReplace);
+                ui_seqProgBar.ThreadSafeInvoke(() => ui_seqProgBar.Visibility = Visibility.Visible);
             }
 
-            _aiUiCts = new CancellationTokenSource();
-            _aiUiTask = Task.Factory.StartNew(() =>
+            _isAiMoving = true;
+            _progressTimer.Start();
+
+            try
             {
-                return _gameEngine.GetAIMove(_isAiParallel);
+                _aiUiCts = new CancellationTokenSource();
+                await _gameEngine.GetAiMoveAsync(_isAiParallel)
+                    .ContinueWith(async antecedent =>
+                    {
+                        var aiMove = antecedent.Result;
+                        if (aiMove.Row != -1)
+                        {
+                            _gameEngine.MakeMove(aiMove.Row, aiMove.Col);
+                        }
+                        else
+                        {
+                            _gameEngine.PassMove();
+                        }
 
-            }, _aiUiCts.Token, TaskCreationOptions.None, TaskScheduler.Default)
-            .ContinueWith(completedTask =>
+                        _progressTimer.Stop();
+                        _progress = 0;
+
+                        var label = $"{_gameEngine.MovesConsidered:N}";
+                        label = label.Substring(0, label.Length - 3);
+                        if (_isAiParallel)
+                        {
+                            ui_parLabel.ThreadSafeInvoke(() => ui_parLabel.Content = label);
+                            ui_parProgBar.ThreadSafeInvoke(() => ui_parProgBar.Visibility = Visibility.Hidden);
+                        }
+                        else
+                        {
+                            ui_seqLabel.ThreadSafeInvoke(() => ui_seqLabel.Content = label);
+                            ui_seqProgBar.ThreadSafeInvoke(() => ui_seqProgBar.Visibility = Visibility.Hidden);
+                        }
+
+                        UpdateBoard();
+                        _isAiMoving = false;
+
+                        if (_isAuto)
+                        {
+                            _isAiParallel = !_isAiParallel;
+                            await GoAiAsync();
+                        }
+                    }, _aiUiCts.Token, TaskContinuationOptions.None, _uiScheduler);
+            }
+            catch (OperationCanceledException)
             {
-                var aiMove = completedTask.Result;
-                if (aiMove.Row != -1)
-                {
-                    _gameEngine.MakeMove(aiMove.Row, aiMove.Col);
-                }
-                else
-                {
-                    _gameEngine.PassMove();
-                }
-
-                string s;
-                if (_isAiParallel)
-                {
-                    s = $"{_gameEngine.MovesConsidered:N}";
-                    s = s.Substring(0, s.Length - 3);
-                    ui_parLabel.Content = s;
-                    ui_parProgBar.Visibility = Visibility.Hidden;
-                }
-                else
-                {
-                    s = $"{_gameEngine.MovesConsidered:N}";
-                    s = s.Substring(0, s.Length - 3);
-                    ui_seqLabel.Content = s;
-                    ui_seqProgBar.Visibility = Visibility.Hidden;
-                }
-
-                UpdateBoard();
-                _isAiMoving = false;
-
-                if (_isAuto)
-                {
-                    _isAiParallel = !_isAiParallel;
-                    GoAI();
-                }
-            }, _aiUiCts.Token, TaskContinuationOptions.None, _uiScheduler);
+            }
         }
 
         private bool UpdateBoard()
@@ -174,31 +190,28 @@ namespace Raytracer.Wpf
             _ghostPieces.Clear();
 
             // Generate new ghost pieces.
-            var moves = _gameEngine.GetValidMoves();
-            foreach (var m in moves)
+            foreach (var m in _gameEngine.GetValidMoves())
             {
                 ShowGhost(m.Row, m.Col, _gameEngine.IsLightMove);
             }
 
-            var gameResult = _gameEngine.GetGameResult();
-            var (isGameOver, message, result) = HandleGameState(gameResult);
-            if (!result)
+            var (isGameOver, message, continueGame) = HandleGameState(_gameEngine.GetGameResult());
+            if (!continueGame)
             {
                 _isGameOver = isGameOver;
                 MessageBox.Show(message, "GAME OVER");
             }
 
-            return result;
+            return continueGame;
 
-            static (bool isGameOver, string message, bool result) HandleGameState(
-                ReversiGameResult result) =>
-            result.GameState switch
-            {
-                ReversiGameState.LightWon => (true, $"Light Won! {result.NumLightPieces}-{result.NumDarkPieces}", false),
-                ReversiGameState.DarkWon => (true, $"Dark Won! {result.NumLightPieces}-{result.NumDarkPieces}", false),
-                ReversiGameState.Draw => (true, $"Draw! {result.NumLightPieces}-{result.NumDarkPieces}", false),
-                _ => (false, null, true)
-            };
+            static (bool isGameOver, string message, bool continueGame) HandleGameState(
+                ReversiGameResult result) => result.GameState switch
+                {
+                    ReversiGameState.LightWon => (true, $"Light Won! {result.NumLightPieces}-{result.NumDarkPieces}", false),
+                    ReversiGameState.DarkWon => (true, $"Dark Won! {result.NumLightPieces}-{result.NumDarkPieces}", false),
+                    ReversiGameState.Draw => (true, $"Draw! {result.NumLightPieces}-{result.NumDarkPieces}", false),
+                    _ => (false, null, true)
+                };
         }
 
         private void OnMainWindowKeyDown(object sender, KeyEventArgs e)
@@ -464,18 +477,17 @@ namespace Raytracer.Wpf
                 return;
             }
 
-            var res = GetGhostPiecePosition(e.GetPosition(mainViewport), out Point ghostPos);
-            if (res)
+            if (GetGhostPiecePosition(e.GetPosition(mainViewport), out Point ghostPos))
             {
                 _gameEngine.SetMinimaxKnobs((int)ui_depthSlider.Value, TimeSpan.FromSeconds((int)ui_timeoutSlider.Value), (int)ui_dopSlider.Value);
-                _progressBarDuration = new Duration(_gameEngine.TimeLimit);
+                _progressTimer.Interval = _gameEngine.TimeLimit / 100;
                 int row = 7 - (int)ghostPos.Y;
                 int col = (int)ghostPos.X;
                 if (_gameEngine.MakeMove(row, col))
                 {
                     if (UpdateBoard())
                     {
-                        GoAI();
+                        Task.Run(() => GoAiAsync());
                     }
                 }
                 else
@@ -489,7 +501,7 @@ namespace Raytracer.Wpf
                 _gameEngine.PassMove();
                 if (UpdateBoard())
                 {
-                    GoAI();
+                    Task.Run(() => GoAiAsync());
                 }
             }
         }
@@ -497,10 +509,8 @@ namespace Raytracer.Wpf
         private bool GetGhostPiecePosition(Point mousePosition, out Point ghostPosition)
         {
             ghostPosition = new Point();
-            var hitTestResult = VisualTreeHelper.HitTest(mainViewport, mousePosition);
-            if (hitTestResult.VisualHit is Cylinder)
+            if (VisualTreeHelper.HitTest(mainViewport, mousePosition).VisualHit is Cylinder cylinder)
             {
-                var cylinder = hitTestResult.VisualHit as Cylinder;
                 if (!_ghostPieces.ContainsKey(cylinder))
                 {
                     return false;
@@ -511,7 +521,6 @@ namespace Raytracer.Wpf
             }
             else
             {
-
                 return false;
             }
         }
@@ -519,26 +528,9 @@ namespace Raytracer.Wpf
 
         private void OnStartStopButtonClick(object sender, RoutedEventArgs e)
         {
-            if (!_isAuto)
+            if (_isAuto)
             {
-                ui_dopSlider.IsEnabled = false;
-                ui_depthSlider.IsEnabled = false;
-                ui_timeoutSlider.IsEnabled = false;
-
-                ui_startStopButton.Content = "Stop Sequential vs. Parallel";
-
-                _gameEngine.SetMinimaxKnobs((int)ui_depthSlider.Value, TimeSpan.FromSeconds((int)ui_timeoutSlider.Value), (int)ui_dopSlider.Value);
-                _progressBarDuration = new Duration(_gameEngine.TimeLimit);
-                _isAuto = true;
-                _isAiParallel = false;
-
-                ui_seqPlayerLabel.Content = "Sequential Player";
-                GoAI();
-            }
-            else
-            {
-                _gameEngine.Cancel();
-                _aiUiCts.Cancel();
+                _aiUiCts?.Cancel();
                 ui_seqProgBar.Visibility = Visibility.Hidden;
                 ui_parProgBar.Visibility = Visibility.Hidden;
 
@@ -554,6 +546,23 @@ namespace Raytracer.Wpf
 
                 ui_seqPlayerLabel.Content = "You";
             }
+            else
+            {
+                ui_dopSlider.IsEnabled = false;
+                ui_depthSlider.IsEnabled = false;
+                ui_timeoutSlider.IsEnabled = false;
+
+                ui_startStopButton.Content = "Stop Sequential vs. Parallel";
+
+                _gameEngine.SetMinimaxKnobs((int)ui_depthSlider.Value, TimeSpan.FromSeconds((int)ui_timeoutSlider.Value), (int)ui_dopSlider.Value);
+                _progressTimer.Interval = _gameEngine.TimeLimit / 100;
+                _isAuto = true;
+                _isAiParallel = false;
+
+                ui_seqPlayerLabel.Content = "Sequential Player";
+                Task.Run(() => GoAiAsync());
+            }
+
             ui_settings.Focus(); // stop the button from blinking due to it having focus
         }
 

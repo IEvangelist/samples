@@ -2,6 +2,8 @@
 using System.Collections.Generic;
 using System.Linq;
 using System.IO;
+using System.Threading.Tasks;
+using System.Threading;
 
 namespace Raytracer.Wpf
 {
@@ -228,7 +230,6 @@ namespace Raytracer.Wpf
                     {
                         break;
                     }
-
                     if (Board[r, col] == you)
                     {
                         b = true;
@@ -253,7 +254,6 @@ namespace Raytracer.Wpf
                     {
                         break;
                     }
-
                     if (Board[r, col] == you)
                     {
                         b = true;
@@ -278,7 +278,6 @@ namespace Raytracer.Wpf
                     {
                         break;
                     }
-
                     if (Board[row, c] == you)
                     {
                         b = true;
@@ -303,7 +302,6 @@ namespace Raytracer.Wpf
                     {
                         break;
                     }
-
                     if (Board[row, c] == you)
                     {
                         b = true;
@@ -328,7 +326,6 @@ namespace Raytracer.Wpf
                     {
                         break;
                     }
-
                     if (Board[r, c] == you)
                     {
                         b = true;
@@ -353,7 +350,6 @@ namespace Raytracer.Wpf
                     {
                         break;
                     }
-
                     if (Board[r, c] == you)
                     {
                         b = true;
@@ -378,7 +374,6 @@ namespace Raytracer.Wpf
                     {
                         break;
                     }
-
                     if (Board[r, c] == you)
                     {
                         b = true;
@@ -403,7 +398,6 @@ namespace Raytracer.Wpf
                     {
                         break;
                     }
-
                     if (Board[r, c] == you)
                     {
                         b = true;
@@ -474,7 +468,8 @@ namespace Raytracer.Wpf
             return gr;
         }
 
-        public MinimaxMove GetAIMove(bool inParallel) => Search(Board, IsLightMove, inParallel);
+        public Task<MinimaxMove> GetAiMoveAsync(bool inParallel) =>
+            SearchAsync(Board, IsLightMove, inParallel);
 
         public override int MaxDepth => _depth;
 
@@ -482,16 +477,10 @@ namespace Raytracer.Wpf
 
         public override int DegreeOfParallelism => _degressOfParallelism;
 
-        protected override bool TerminalTest(MinimaxSpot[,] state)
-        {
-            // Can either player move?
-            if (GetValidMoves(state, true).Count() == 0 && GetValidMoves(state, false).Count() == 0)
-            {
-                return true;
-            }
-
-            return false;
-        }
+        // Can either player move?
+        protected override bool TerminalTest(MinimaxSpot[,] state) =>
+            GetValidMoves(state, true).Count() == 0 &&
+            GetValidMoves(state, false).Count() == 0;
 
         protected override int EvaluateHeuristic(MinimaxSpot[,] state)
         {

@@ -80,13 +80,14 @@ namespace Raytracer.Wpf
         /// 
         /// This method is thread-safe.
         /// </remarks>
-        private MinimaxMove InternalSearch(MinimaxSpot[,] state, bool isLightPlayer, int alpha, int beta, int depth)
+        private async ValueTask<MinimaxMove> InternalSearchAsync(
+            MinimaxSpot[,] state, bool isLightPlayer, int alpha, int beta, int depth)
         {
             // Stop the search if...
             if (TerminalTest(state) || depth >= _maxDepth || _cancellationToken.IsCancellationRequested)
             {
                 _movesConsidered++;
-                return new MinimaxMove(EvaluateHeuristic(state));
+                return await new ValueTask<MinimaxMove>(new MinimaxMove(EvaluateHeuristic(state)));
             }
 
             // Initialize the best move for this recursive call.
@@ -102,7 +103,7 @@ namespace Raytracer.Wpf
                 consideredLocalMoves = true;
 
                 var currentMove = move;
-                currentMove.Value = InternalSearch(GetInsight(state, currentMove, isLightPlayer), !isLightPlayer, alpha, beta, depth + 1).Value;
+                currentMove.Value = (await InternalSearchAsync(GetInsight(state, currentMove, isLightPlayer), !isLightPlayer, alpha, beta, depth + 1)).Value;
                 if (isLightPlayer)
                 {
                     if (currentMove.Value > bestMove.Value)
@@ -134,7 +135,7 @@ namespace Raytracer.Wpf
             // If there were no valid moves, still calculate the value.
             if (!consideredLocalMoves)
             {
-                bestMove.Value = InternalSearch(state, !isLightPlayer, alpha, beta, depth + 1).Value;
+                bestMove.Value = (await InternalSearchAsync(state, !isLightPlayer, alpha, beta, depth + 1)).Value;
             }
 
             return bestMove;
@@ -159,7 +160,8 @@ namespace Raytracer.Wpf
         /// 
         /// This method is thread-safe.
         /// </remarks>
-        private MinimaxMove InternalSearchTPL(MinimaxSpot[,] state, bool isLightPlayer, int alpha, int beta, int depth, CancellationToken token)
+        private async ValueTask<MinimaxMove> InternalSearchParallelAsync(
+            MinimaxSpot[,] state, bool isLightPlayer, int alpha, int beta, int depth, CancellationToken token)
         {
             // Stop the search if...
             if (TerminalTest(state) || depth >= _maxDepth || _cancellationToken.IsCancellationRequested)
@@ -195,9 +197,9 @@ namespace Raytracer.Wpf
                 if (_taskCount < _degOfParallelism && depth <= _maxDepth - 1)
                 {
                     Interlocked.Increment(ref _taskCount);
-                    workers.Enqueue(Task.Run(() =>
+                    workers.Enqueue(Task.Run(async () =>
                     {
-                        currentMove.Value = InternalSearchTPL(GetInsight(state, currentMove, isLightPlayer), !isLightPlayer, alpha, beta, depth + 1, cts.Token).Value;
+                        currentMove.Value = (await InternalSearchParallelAsync(GetInsight(state, currentMove, isLightPlayer), !isLightPlayer, alpha, beta, depth + 1, cts.Token)).Value;
                         lock (bigLock)
                         {
                             if (isLightPlayer)
@@ -233,7 +235,8 @@ namespace Raytracer.Wpf
                 else
                 {
                     bool isPruning = false;
-                    currentMove.Value = InternalSearchTPL(GetInsight(state, currentMove, isLightPlayer), !isLightPlayer, alpha, beta, depth + 1, cts.Token).Value;
+                    var intermediateMove = await InternalSearchParallelAsync(GetInsight(state, currentMove, isLightPlayer), !isLightPlayer, alpha, beta, depth + 1, cts.Token);
+                    currentMove.Value = intermediateMove.Value;
 
                     // If there are no tasks, no need to lock.
                     bool lockTaken = false;
@@ -286,13 +289,13 @@ namespace Raytracer.Wpf
                 }
             }
 
-            Task.WaitAll(workers.ToArray());
+            await Task.WhenAll(workers);
 
             // If there were no valid moves, still calculate the value.
             if (!consideredLocalMoves)
             {
-                bestMove.Value =
-                    InternalSearchTPL(state, !isLightPlayer, alpha, beta, depth + 1, token).Value;
+                var intermediateMove = await InternalSearchParallelAsync(state, !isLightPlayer, alpha, beta, depth + 1, token);
+                bestMove.Value = intermediateMove.Value;
             }
 
             return bestMove;
@@ -308,7 +311,8 @@ namespace Raytracer.Wpf
         /// <remarks>
         /// This method will only return a MinimaxMove(-1...) if there are no valid moves.
         /// </remarks>
-        public MinimaxMove Search(MinimaxSpot[,] state, bool isLightPlayer, bool inParallel)
+        public async Task<MinimaxMove> SearchAsync(
+            MinimaxSpot[,] state, bool isLightPlayer, bool inParallel)
         {
             // Initialize a bunch of state.
             _maxDepth = MaxDepth == -1 ? int.MaxValue : MaxDepth;
@@ -316,23 +320,25 @@ namespace Raytracer.Wpf
             _timeLimit = TimeLimit;
             _taskCount = 0;
             _movesConsidered = 0;
-            var curCts = _cancellationTokenSource = new CancellationTokenSource();
+            _cancellationTokenSource = new CancellationTokenSource();
             _cancellationToken = _cancellationTokenSource.Token;
 
             var aiMove = new MinimaxMove(-1, -1, null);
 
             // Start the timeout timer.  Done using a dedicated thread to minimize delay 
             // in cancellation due to lack of threads in the pool to run the callback.
-            var timeoutTask = Task.Factory.StartNew(() =>
+            var timeoutTask = Task.Factory.StartNew(async () =>
             {
-                Thread.Sleep(_timeLimit);
-                curCts.Cancel();
+                await Task.Delay(_timeLimit);
+                _cancellationTokenSource.Cancel();
             }, TaskCreationOptions.LongRunning);
 
             // Do the search
-            aiMove = inParallel
-                ? InternalSearchTPL(state, isLightPlayer, int.MinValue, int.MaxValue, 0, CancellationToken.None)
-                : InternalSearch(state, isLightPlayer, int.MinValue, int.MaxValue, 0);
+            var task = inParallel
+                ? InternalSearchParallelAsync(state, isLightPlayer, int.MinValue, int.MaxValue, 0, CancellationToken.None)
+                : InternalSearchAsync(state, isLightPlayer, int.MinValue, int.MaxValue, 0);
+
+            aiMove = await task;
 
             // Make sure that MinimaxMove(-1...) is only returned if there are no valid moves, because
             // InternalSearch* may return MinimaxMove(-1...) if none of the valid moves beats Int32.Min/Max.
@@ -347,17 +353,6 @@ namespace Raytracer.Wpf
             }
 
             return aiMove;
-        }
-
-        /// <summary>
-        /// Cancel the ongoing operation, if there is one.
-        /// </summary>
-        public void Cancel()
-        {
-            if (_cancellationTokenSource != null)
-            {
-                _cancellationTokenSource.Cancel();
-            }
         }
 
         /// <summary>
