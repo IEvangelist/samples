@@ -20,8 +20,8 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="Azure.Identity" Version="1.14.0" />
-    <PackageReference Include="Azure.ResourceManager.Resources" Version="1.10.0" />
+    <PackageReference Include="Azure.Identity" Version="1.14.1" />
+    <PackageReference Include="Azure.ResourceManager.Resources" Version="1.11.0" />
     <PackageReference Include="Azure.ResourceManager.Storage" Version="1.4.2" />
     <PackageReference Include="Azure.Storage.Blobs" Version="12.24.1" />
   </ItemGroup>
