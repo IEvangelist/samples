@@ -17,7 +17,7 @@
     <PackageReference Include="MetroFramework">
       <Version>1.2.0.3</Version>
     </PackageReference>
-    <PackageReference Include="Microsoft.Windows.Compatibility" Version="9.0.6" />
+    <PackageReference Include="Microsoft.Windows.Compatibility" Version="9.0.7" />
   </ItemGroup>
   
   <ItemGroup>
